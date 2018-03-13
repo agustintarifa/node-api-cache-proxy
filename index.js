@@ -6,7 +6,7 @@ var extract = require('url-querystring')
 var filendir = require('filendir')
 var fs = require('fs')
 var getRawBody = require('raw-body')
-var MD5 = require('crypto-js/md5');
+var MD5 = require("crypto-js/md5");
 var objectAssign = require('object-assign')
 var omit = require('object.omit')
 var packageJson = require('./package.json')
@@ -14,6 +14,14 @@ var path = require('path')
 var request = require('request')
 var sanitize = require('sanitize-filename')
 var zlib = require('zlib')
+const util = require('util');
+var crypto = require('crypto')
+
+function encrypt(buffer) {
+	var name = 'braitsch';
+	var hash = crypto.createHash('md5').update(buffer).digest('hex');
+	return hash;
+}
 
 var MODULE_NAME = 'api-cache-proxy'
 
@@ -25,21 +33,21 @@ var defaultConfig = {
 	cacheDir: 'api-cache/',
 	excludeRequestHeaders: [],
 	excludeRequestParams: [],
-	isValidResponse: function(envelope) {
+	isValidResponse: function (envelope) {
 		if (envelope.statusCode === 200) {
 			return true
 		} else {
 			return false
 		}
 	},
-	localURLReplace: function(url) {
+	localURLReplace: function (url) {
 		return url
 	},
 	timeout: false
 }
 
 objectAssign(APICache.prototype, {
-	_createEnvelope: function(response, responseBody, requestBody) {
+	_createEnvelope: function (response, responseBody, requestBody) {
 		var excludeRequestHeaders = [
 			'content-encoding', // content is unpacked, content-encoding doesn't apply anymore,
 			'content-length', // when content is uncpacked, content-length is different.
@@ -64,15 +72,15 @@ objectAssign(APICache.prototype, {
 		}
 	},
 
-	onResponse: function(apiResponse, res, requestBody, resolve, reject) {
+	onResponse: function (apiResponse, res, requestBody, resolve, reject) {
 		var body = []
 
-		apiResponse.on('data', function(chunk) {
+		apiResponse.on('data', function (chunk) {
 			// Data is Buffer when gzip, text when not-gzip
 			body.push(chunk)
 		})
 
-		apiResponse.on('end', function() {
+		apiResponse.on('end', function () {
 			// Thanks, Nick Fishman
 			// http://nickfishman.com/post/49533681471/nodejs-http-requests-with-gzip-deflate-compression
 			var encoding = apiResponse.headers['content-encoding']
@@ -88,11 +96,12 @@ objectAssign(APICache.prototype, {
 
 			var envelope = this._createEnvelope(apiResponse, body, requestBody)
 
+			// this.sendCachedResponse(res, envelope, resolve, reject)
 			if (this.config.isValidResponse(envelope)) {
 				this._saveRequest(envelope)
 				this.sendResponse(res, envelope.statusCode, envelope.headers, envelope.body)
 				resolve({
-					dataSource: 'API',
+					dataSource: "API",
 					envelope: envelope
 				})
 			} else {
@@ -100,17 +109,35 @@ objectAssign(APICache.prototype, {
 			}
 		}.bind(this))
 	},
+	checkCache: function (res, reqMethod, reqBody, reqURL) {
+		var filePath = this._getFileName(reqMethod, reqBody, this._clearURLParams(reqURL));
+		if (fs.existsSync(filePath) && !res.headersSent) { // in case of custom error handling in promise.catch
+			var data = fs.readFileSync(filePath, 'utf-8')
+			var cachedEnvelope = JSON.parse(data)
+			if (cachedEnvelope.version !== packageJson.version) {
+				throw new Error("Request envelope created in old plugin version.")
+			}
 
-	sendCachedResponse: function(res, envelope, resolve, reject) {
+			var headers = cachedEnvelope.headers
+			headers[MODULE_NAME + '-hit-date'] = cachedEnvelope.cacheDate
+			res.writeHead(200, headers);
+			res.end(cachedEnvelope.body);
+			return true;
+		}
+
+		return false;
+	},
+	sendCachedResponse: function (res, envelope, resolve, reject) {
 		var cachedEnvelope,
-				filePath = this._getFileName(envelope)
+			filePath = this._getFileName(envelope.reqMethod, envelope.reqBody, envelope.reqURL)
+
 		try {
 			var data = fs.readFileSync(filePath, 'utf-8')
 			cachedEnvelope = JSON.parse(data)
 			if (cachedEnvelope.version !== packageJson.version) {
-				throw new Error('Request envelope created in old plugin version.')
+				throw new Error("Request envelope created in old plugin version.")
 			}
-		} catch(e) {
+		} catch (e) {
 			reject(envelope)
 			this.sendResponse(res, envelope.statusCode, envelope.headers, envelope.body)
 			return false
@@ -120,14 +147,14 @@ objectAssign(APICache.prototype, {
 		headers[MODULE_NAME + '-hit-date'] = cachedEnvelope.cacheDate
 
 		resolve({
-			dataSource: 'Cache',
+			dataSource: "Cache",
 			filePath: filePath,
 			envelope: cachedEnvelope
 		})
 		this.sendResponse(res, cachedEnvelope.statusCode, headers, cachedEnvelope.body)
 	},
 
-	sendResponse: function(res, statusCode, headers, body) {
+	sendResponse: function (res, statusCode, headers, body) {
 		if (!res.headersSent) { // in case of custom error handling in promise.catch
 			res.writeHead(statusCode ? statusCode : 500, headers);
 			res.end(body)
@@ -140,25 +167,28 @@ objectAssign(APICache.prototype, {
 	 * @param	{string} href
 	 * @return {string}
 	 */
-	_clearURLParams: function(href) {
+	_clearURLParams: function (href) {
 		var url = extract(href)
 		var queryObj = omit(url.qs, this.config.excludeRequestParams)
 
-		var desiredUrlParams = Object.keys(queryObj).map(function(paramName) {
+		var desiredUrlParams = Object.keys(queryObj).map(function (paramName) {
 			return paramName + '=' + encodeURIComponent(queryObj[paramName])
 		}).join('&')
 
 		return desiredUrlParams ? url.url + '?' + desiredUrlParams : url.url
 	},
 
-	_getFileName: function(envelope) {
+	_getFileName: function (reqMethod, reqBody, reqURL) {
+
 		var bodyHash = ''
-		if (envelope.reqMethod !== 'GET') {
-			bodyHash = ' ' + MD5(JSON.stringify(envelope.reqBody))
+		if (reqMethod !== 'GET') {
+			bodyHash = ' ' + MD5(JSON.stringify(reqBody))
 		}
 
-		var sanitazedURL = sanitize(envelope.reqURL.replace('://', '-'), {replacement: '-'})
-		var fileName = envelope.reqMethod + '_' + sanitazedURL + bodyHash +'.tmp'
+		var sanitazedURL = sanitize(reqURL.replace('://', '-'), { replacement: '-' })
+		var hw = encrypt(reqMethod + '_' + sanitazedURL + bodyHash);
+
+		var fileName = hw + '.tmp'
 
 		return path.resolve(this.config.cacheDir, fileName)
 	},
@@ -168,18 +198,20 @@ objectAssign(APICache.prototype, {
 	 * @param	{object} envelope
 	 * @return {none}
 	 */
-	_saveRequest: function(envelope) {
-		var filePath = this._getFileName(envelope)
+	_saveRequest: function (envelope) {
+		var filePath = this._getFileName(envelope.reqMethod, envelope.reqBody, envelope.reqURL)
 
-		filendir.writeFile(filePath, JSON.stringify(envelope), function(err) {
+		filendir.writeFile(filePath, JSON.stringify(envelope), function (err) {
 			if (err) {
 				log('File could not be saved in ' + this.config.cacheDir)
 				throw err
+			} else {
+				console.log('Write cache: ' + filePath);
 			}
 		}.bind(this))
 	},
 
-	onError: function(apiReq, res, requestBody, resolve, reject) {
+	onError: function (err, apiReq, res, requestBody, resolve, reject) {
 		var envelope = { // this envelope is used just in _getFileName
 			reqMethod: apiReq.method,
 			reqURL: this._clearURLParams(apiReq.url || apiReq.href),
@@ -193,15 +225,15 @@ objectAssign(APICache.prototype, {
 	 * POST, PUT methods' payload need to be taken out from request object.
 	 * @param  {object} req Request object
 	 */
-	_getRequestBody: function(req, returnReference) {
-		getRawBody(req).then(function(bodyBuffer) {
+	_getRequestBody: function (req, returnReference) {
+		getRawBody(req).then(function (bodyBuffer) {
 			returnReference.requestBody = bodyBuffer.toString()
-		}).catch(function() {
+		}.bind(this)).catch(function () {
 			log('Unhandled error in getRawBody', arguments)
 		})
 	},
 
-	_getApiURL: function(req) {
+	_getApiURL: function (req) {
 		var url = req.url.split('/')
 		var newURL = this.config.apiUrl.replace(/\/+$/, '')
 		if (url[0] === '') {
@@ -227,46 +259,46 @@ function APICache(config) {
 
 	this.config = objectAssign({}, defaultConfig, config)
 
-	var handleRequest = function(req, res) {
-		var url = this._getApiURL(req)
-		var that = this
+	var handleRequest = function (req, res) {
 		var reqBodyRef = {
 			requestBody: ''
 		}
 		this._getRequestBody(req, reqBodyRef)
 
-		var promise = new Promise(function(resolve, reject) {
+		var url = this._getApiURL(req)
+		var promise = new Promise(function (resolve, reject) {
 			var apiReq = request(url)
-			if (that.config.cacheEnabled) {
-				req
-				.pipe(apiReq)
-				.on('response', function(response) {
-					that.onResponse(response, res, reqBodyRef.requestBody, resolve, reject)
-				})
-				.on('error', function(err) {
-					that.onError(apiReq, res, reqBodyRef.requestBody, resolve, reject)
-					promise.catch(function() {
-						log('API Error', url, err)
-					})
-				})
-			} else {
-				req.pipe(apiReq).pipe(res)
 
-				apiReq.on('response', function() {
-					resolve({dataSource: 'API'})
-				})
-				apiReq.on('error', function(err) {
-					reject(err)
-				})
+			//first check cache if not, continue as always
+			if (!this.checkCache(res, apiReq.method, reqBodyRef.requestBody, url)) {
+				if (this.config.cacheEnabled) {
+					req
+						.pipe(apiReq)
+						.on('response', function (response) {
+							this.onResponse(response, res, reqBodyRef.requestBody, resolve, reject)
+						}.bind(this))
+						.on('error', function (err) {
+							this.onError(err, apiReq, res, reqBodyRef.requestBody, resolve, reject)
+							promise.catch(function () {
+								log('API Error', url, err)
+							})
+						}.bind(this))
+				} else {
+					req.pipe(apiReq).pipe(res)
+					apiReq.on('response', function () {
+						resolve({ dataSource: "API" })
+					})
+					apiReq.on('error', function (err) {
+						reject(err)
+					})
+				}
+				if (this.config.timeout) {
+					setTimeout(function () {
+						apiReq.abort()
+					}, this.config.timeout)
+				}
 			}
-			if (that.config.timeout) {
-				setTimeout(function() {
-					that.onError(apiReq, res, reqBodyRef.requestBody, resolve, reject)
-					log('API Timeout', url)
-					apiReq.abort()
-				}, that.config.timeout)
-			}
-		})
+		}.bind(this))
 
 		return promise
 	}
@@ -275,5 +307,3 @@ function APICache(config) {
 }
 
 module.exports = APICache
-
-// TODO: endpoint with list of all cached entries
