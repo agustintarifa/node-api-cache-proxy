@@ -206,6 +206,7 @@ objectAssign(APICache.prototype, {
 				log('File could not be saved in ' + this.config.cacheDir)
 				throw err
 			} else {
+				fs.chmod(filePath, parseInt('0777', 8));
 				console.log('Write cache: ' + filePath);
 			}
 		}.bind(this))
