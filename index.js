@@ -99,6 +99,7 @@ objectAssign(APICache.prototype, {
 			// this.sendCachedResponse(res, envelope, resolve, reject)
 			if (this.config.isValidResponse(envelope)) {
 				this._saveRequest(envelope)
+				console.log('Readed API: ' + envelope.reqURL)
 				this.sendResponse(res, envelope.statusCode, envelope.headers, envelope.body)
 				resolve({
 					dataSource: "API",
@@ -110,13 +111,15 @@ objectAssign(APICache.prototype, {
 		}.bind(this))
 	},
 	checkCache: function (res, reqMethod, reqBody, reqURL) {
-		var filePath = this._getFileName(reqMethod, reqBody, this._clearURLParams(reqURL));
+		var url = this._clearURLParams(reqURL);
+		var filePath = this._getFileName(reqMethod, reqBody, url);
 		if (fs.existsSync(filePath) && !res.headersSent) { // in case of custom error handling in promise.catch
 			var data = fs.readFileSync(filePath, 'utf-8')
 			var cachedEnvelope = JSON.parse(data)
 			if (cachedEnvelope.version !== packageJson.version) {
 				throw new Error("Request envelope created in old plugin version.")
 			}
+			console.log('Readed cache: ' + url);
 
 			var headers = cachedEnvelope.headers
 			headers[MODULE_NAME + '-hit-date'] = cachedEnvelope.cacheDate
