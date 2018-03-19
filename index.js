@@ -33,6 +33,7 @@ var defaultConfig = {
 	cacheDir: 'api-cache/',
 	excludeRequestHeaders: [],
 	excludeRequestParams: [],
+	excludeEndpoints: [],
 	isValidResponse: function (envelope) {
 		if (envelope.statusCode === 200) {
 			return true
@@ -111,6 +112,12 @@ objectAssign(APICache.prototype, {
 		}.bind(this))
 	},
 	checkCache: function (res, reqMethod, reqBody, reqURL) {
+
+		if (this._inExcludedEndpoint(reqURL) === true){
+			console.log('Excluded: ' + reqURL);
+			return false;
+		}
+
 		var url = this._clearURLParams(reqURL);
 		var filePath = this._getFileName(reqMethod, reqBody, url);
 		if (fs.existsSync(filePath) && !res.headersSent) { // in case of custom error handling in promise.catch
@@ -181,6 +188,17 @@ objectAssign(APICache.prototype, {
 		return desiredUrlParams ? url.url + '?' + desiredUrlParams : url.url
 	},
 
+	_inExcludedEndpoint: function (href) {
+		var isExcluded = false;
+		this.config.excludeEndpoints.forEach(element => {
+			if (href.indexOf(element) != -1) {
+				isExcluded = true;
+				return;
+			}
+		});
+		return isExcluded;
+	},
+
 	_getFileName: function (reqMethod, reqBody, reqURL) {
 
 		var bodyHash = ''
@@ -206,10 +224,10 @@ objectAssign(APICache.prototype, {
 
 		filendir.writeFile(filePath, JSON.stringify(envelope), function (err) {
 			if (err) {
-				log('File could not be saved in ' + this.config.cacheDir)
+				console.log('File could not be saved in ' + this.config.cacheDir)
 				throw err
 			} else {
-				fs.chmod(filePath, parseInt('0777', 8));
+				fs.chmodSync(filePath, parseInt('0777', 8));
 				console.log('Write cache: ' + filePath);
 			}
 		}.bind(this))
@@ -304,7 +322,7 @@ function APICache(config) {
 			}
 		}.bind(this))
 
-		return promise
+		return promise['catch'](function (err) {});
 	}
 
 	return objectAssign(handleRequest.bind(this), this)
